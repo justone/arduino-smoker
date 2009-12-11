@@ -1,5 +1,8 @@
 // Arduino sketch to control the smoker.
 
+#include <PID_Beta6.h>
+#include <pt.h>
+
 int ledPin =  13;
 
 void setup() {
