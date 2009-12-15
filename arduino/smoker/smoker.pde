@@ -47,6 +47,8 @@ static int reportStatus (struct pt *pt) {
   PT_END(pt);
 }
 
+// mostly from:
+// http://todbot.com/blog/2009/07/30/arduino-serial-protocol-design-patterns/
 void handleCommand () {
   if (!Serial.available()) {
     return;
