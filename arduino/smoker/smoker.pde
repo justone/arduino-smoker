@@ -4,16 +4,24 @@
 #include <pt.h>
 
 // Pin assignments
-const int ledPin =  13;
 const int tempPin = 0;
 const int hotplatePin = 3;
-const int statusDelay = 2;
+const int statusDelay = 1;
 
-// State for LED
-static int ledState = LOW;
-static long ledNextMillis = 0;
-static int ledWaitSeconds = 1;
-static struct pt pt_led;
+// State for PID
+static long pidNextMillis = 0;
+int newTemp;
+double tempSetPoint = 225; //default. This can be set by remote
+double currentTemp;
+double hotplateMillisOn;
+static long hotplateWaitMillis = 0;
+
+// 100 seconds is a decent amount of time to loop on the hotplate control
+// reduces wear and tear on the thing
+static long loopMillis = 100000;
+static long minOffTime = 2000;
+PID pid(&currentTemp, &hotplateMillisOn, &tempSetPoint, 6, 4, 1); //agressive tuning is fine.
+static struct pt pt_pid;
 
 // State for Temp Sensor
 float tcSum = 0.0;
@@ -28,20 +36,35 @@ static struct pt pt_temp;
 static long statusNextMillis = 0;
 static struct pt pt_status;
 
-static int blinkLed (struct pt *pt) {
+static int controlHotplate (struct pt *pt) {
   PT_BEGIN(pt);
 
   while (1) {
-    ledNextMillis = millis() + (ledWaitSeconds * 1000);
-    PT_WAIT_UNTIL(pt, ledNextMillis < millis());
-
-    if (ledState == LOW)
-      ledState = HIGH;
-    else
-      ledState = LOW;
-
-    digitalWrite(ledPin, ledState);
-    digitalWrite(hotplatePin, ledState);
+    // figure out first how long we want to be on for
+    currentTemp = latestReading;
+    pid.Compute();
+    
+    // don't want to bother turning on for a short pop
+    if(hotplateMillisOn > 250) {
+      digitalWrite(hotplatePin, 1);
+      Serial.println("** Turning Hotplate On");
+    } else {
+      digitalWrite(hotplatePin, 0);
+      Serial.println("** Leaving Hotplate Off");
+    }
+    
+    hotplateWaitMillis = millis() + hotplateMillisOn;
+    PT_WAIT_UNTIL(pt, hotplateWaitMillis < millis());
+    
+    if(hotplateMillisOn < (loopMillis - minOffTime)) {
+      digitalWrite(hotplatePin, 0);
+      Serial.println("** Turning Hotplate Off");
+    } else {
+      Serial.println("** Leaving Hotplate On");
+      digitalWrite(hotplatePin, 1);
+    }
+    hotplateWaitMillis = millis() + (loopMillis - hotplateMillisOn);
+    PT_WAIT_UNTIL(pt, hotplateWaitMillis < millis());
   }
 
   PT_END(pt);
@@ -59,21 +82,55 @@ static int sampleTemp (struct pt *pt) {
   PT_END(pt);
 }
 
+void setup() {
+  pinMode(hotplatePin, OUTPUT);
+  
+
+  Serial.begin(9600);
+  setupTempSensor();
+
+  pid.SetOutputLimits(0, loopMillis); // tell the PID to leave the hotplate on for between 0 and 10 seconds
+  hotplateMillisOn = 0;
+  pid.SetMode(AUTO);
+  // initialize the ProtoThreads varables
+  PT_INIT(&pt_pid);
+  PT_INIT(&pt_status);
+  PT_INIT(&pt_temp);
+}
+
+void loop() {
+  sampleTemp(&pt_temp);
+  controlHotplate(&pt_pid);
+  reportStatus(&pt_status);
+  handleCommand();
+}
+
+
 static int reportStatus (struct pt *pt) {
   PT_BEGIN(pt);
 
   while (1) {
     statusNextMillis = millis() + (statusDelay * 1000);
     PT_WAIT_UNTIL(pt, statusNextMillis < millis());
+    
+    // we want to run the PID code more often
+    // tuck it in here too
+    currentTemp = latestReading;
+    pid.Compute();
 
     Serial.println("Status:");
-    Serial.print("led delay:");
-    Serial.println(ledWaitSeconds);
-    Serial.print("temp:");
-    printFloat(getFreshTemp(),2);
+    Serial.print("Current target temp: ");
+    printFloat(tempSetPoint,2);
     Serial.print("\n");
-    Serial.print("raw temp:");
-    Serial.println(analogRead(tempPin));
+    
+    Serial.print("Current actual temp: ");
+    printFloat(getFreshTemp(),2);
+    Serial.print("\n\n");
+    
+    Serial.print("Current milliseconds hotplate stays on: ");
+    printFloat(hotplateMillisOn,2);
+    Serial.print("\n");
+ 
     
   }
 
@@ -113,11 +170,11 @@ void handleCommand () {
   }
   int argcnt = a;         // number of args read
 
-  if (strcmp(cmd, "setDelay") == 0) {
-    int newDelay = strtol(args[0], NULL, 0);
-    if (newDelay > 0) {
-      Serial.println("new delay received");
-      ledWaitSeconds = newDelay;
+  if (strcmp(cmd, "setTemp") == 0) {
+    int newTemp = strtol(args[0], NULL, 0);
+    if (newTemp > 0) {
+      Serial.println("new temp received");
+      tempSetPoint = newTemp;
     }
   }
 }
@@ -203,22 +260,4 @@ void printFloat(float value, int places) {
   }
 }
 
-void setup() {
-  pinMode(ledPin, OUTPUT);
-  pinMode(hotplatePin, OUTPUT);
 
-  Serial.begin(9600);
-  setupTempSensor();
-
-  // initialize the ProtoThreads varables
-  PT_INIT(&pt_led);
-  PT_INIT(&pt_status);
-  PT_INIT(&pt_temp);
-}
-
-void loop() {
-  blinkLed(&pt_led);
-  sampleTemp(&pt_temp);
-  reportStatus(&pt_status);
-  handleCommand();
-}
